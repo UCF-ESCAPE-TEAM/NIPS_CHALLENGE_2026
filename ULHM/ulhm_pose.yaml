@@ -1,0 +1,8 @@
+brain_model_config:
+  =replace=: true
+  name: "UlhmPose"
+  hidden: 128
+  latent: 32
+  recon_s_weight: 1.0
+  consistency_weight: 0.1
+  consistency: mse
