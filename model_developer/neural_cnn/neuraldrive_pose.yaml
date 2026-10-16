@@ -1,0 +1,24 @@
+brain_model_config:
+  =replace=: true
+  name: "NeuralDrivePose"
+  # EMG front-end (Negro et al. 2016): zero-phase band-pass FIR + mean removal
+  band_low_hz: 20.0
+  band_high_hz: 500.0
+  filter_taps: 201
+  learnable_filter: false
+  # decomposition stages
+  n_delays: 32          # Negro: ~1000 / n_channels = 64 for 16 ch; 32 = 16 ms
+  n_sources: 32
+  hidden: 128
+  dropout: 0.1
+  sample_rate: 2000
+  rate_window_ms: 100.0
+  rate_stride_ms: 20.0
+  threshold_init: 2.0
+  # self-supervised decomposition losses
+  ica_weight: 0.1
+  decorr_weight: 0.1
+  sparsity_weight: 0.01
+  # training-time augmentation
+  augment: true
+  gain_jitter: 0.3
