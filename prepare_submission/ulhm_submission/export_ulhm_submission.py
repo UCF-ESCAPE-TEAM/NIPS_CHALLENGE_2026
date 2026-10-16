@@ -20,7 +20,7 @@ from pathlib import Path
 import torch
 import yaml
 
-from neuralbench.models.ulhm_pose import UlhmPose  # your fork: models/ulhm_pose.py
+from neuraltrain.models.ulhm_pose import UlhmPose # your fork: models/ulhm_pose.py
 
 KEEP = ("encoder_x.", "decoder.")
 
