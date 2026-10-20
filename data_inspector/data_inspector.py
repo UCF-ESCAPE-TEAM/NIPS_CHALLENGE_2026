@@ -41,7 +41,7 @@ data.set_annotations(mne.Annotations(onset=bad["onset"].to_numpy(),
                                     duration=bad["duration"].to_numpy(),
                                     description=["BAD_IK"] * len(bad)))
 # any description starting with "BAD" is honoured by reject_by_annotation
-emg_nan    = data.get_data(picks=emg_names,   reject_by_annotation="omit") * 1e6
+emg_nan    = data.get_data(picks=emg_names,   reject_by_annotation="omit")
 joints_nan = data.get_data(picks=joint_names, reject_by_annotation="omit")
 
 if plot:
