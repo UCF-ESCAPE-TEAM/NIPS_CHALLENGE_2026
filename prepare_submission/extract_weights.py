@@ -9,8 +9,8 @@ from pathlib import Path
 
 import torch
 
-CKPT_PATH = Path("/home/ji045311/NIPS_2026_Challenge/Results/neuralbench.main.Experiment.run,1/seed=33,task_name=pose,loss.name=L1Loss,brain_model_output_size=20,delete_checkpoints_on_exit=False,augmentation={num_bands=1,pr...543-2b405cf3/best.ckpt").expanduser()
-OUT_PATH = Path("/home/ji045311/NIPS_2026_Challenge/submission/stcn/weights.pt").expanduser()
+CKPT_PATH = Path("/home/jerry/Challenge_2026/result/neuralbench.main.Experiment.run,1/seed=33,task_name=pose,loss.name=L1Loss,brain_model_output_size=20,delete_checkpoints_on_exit=False,augmentation={num_bands=1,pr...563-0965b8ee/best.ckpt").expanduser()
+OUT_PATH = Path("/home/jerry/Challenge_2026/submission/TCN_V2/weights.pt").expanduser()
 
 # Prefix under which the brain model lives in the Lightning state_dict;
 # None = auto-detect ("model." for neuraltrain's BrainModule).
