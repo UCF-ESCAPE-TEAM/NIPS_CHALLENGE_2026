@@ -74,7 +74,7 @@ def plot_windowed_psd(data_folder: pathlib.Path,
         emg_scale = 1e6
     else:
         data = data.filter(l_freq=20, h_freq=450, picks="emg", verbose="error")
-        data = data.notch_filter(freqs=[60, 120, 180], picks="emg", verbose="error")
+        data = data.notch_filter(freqs=[60, 120, 180], picks="emg", verbose="error", notch_widths=6, trans_bandwidth=2)
         data = data.apply_function(lambda x: (x - x.min()) / (x.max() - x.min() + 1e-12),
                                    picks="emg", verbose="error", channel_wise=False)
         emg_unit = "a.u."
