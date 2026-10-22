@@ -5,42 +5,70 @@ import numpy as np
 import mne
 import pandas as pd
 import pathlib
-from scipy.ndimage import binary_dilation
+from scipy.ndimage import binary_dilation, uniform_filter1d
+from scipy.signal import butter, sosfiltfilt, iirnotch, filtfilt
 from channel_rejection import detect_high_rms_channels, detect_powerline_channels, arm_band_interpolate_channels
 
 
+# ----------------------------------------------------------------------------
+# numpy / scipy signal processing (MNE is used only to read the BDF file)
+# ----------------------------------------------------------------------------
+
 def detect_transients(emg: np.ndarray,
                       sfreq: float,
-                      jump_mad: float = 12.0,
-                      swing_ratio: float = 8.0,
-                      swing_hfreq: float = 10.0,
+                      step_ratio: float = 4.0,
+                      step_win_s: float = 0.02,
+                      rms_win_s: float = 0.2,
+                      rail_frac: float = 0.98,
                       pad_s: float = 0.05) -> np.ndarray:
     """
     Flag broadband transients (electrode pops, contact loss, motion steps) on the RAW EMG.
     These are what turn into narrow-band "ringing" after band-pass / notch filtering, so they
     have to be found here, before any filter sees them.
+
+    Detection is a baseline-STEP test normalised by the LOCAL EMG level: at each sample compare
+    the mean of the next `step_win_s` against the mean of the previous `step_win_s`. Genuine EMG
+    is zero-mean, so this stays ~0 no matter how strong the contraction; a pop / contact loss is
+    a DC offset jump and shows up as a step much larger than the EMG riding on it.
     Args:
         emg: Raw EMG, shape (n_channels, n_samples), in volts.
         sfreq: Sampling frequency in Hz.
-        jump_mad: Sample-to-sample jump threshold, in robust SDs (MAD * 1.4826) above the median jump.
-        swing_ratio: Low-frequency baseline swing threshold, as a multiple of the median swing.
-        swing_hfreq: Cut-off of the low-pass used to isolate baseline swings (below the EMG band).
+        step_ratio: Flag when |step| > step_ratio * local EMG RMS (plus a floor at the recording's
+            median RMS so quiet rest periods do not fire on tiny drifts).
+        step_win_s: Half-width of the two-sided mean used to measure the step.
+        rms_win_s: Window for the local EMG RMS (on the 20-450 Hz content).
+        rail_frac: Also flag samples at |x| >= rail_frac * max|x| (ADC saturation).
         pad_s: Each flagged sample is dilated by +/- this many seconds so the whole event is covered.
     Returns:
         Boolean mask, shape (n_channels, n_samples), True where the sample is an artifact.
     """
-    # a) abrupt steps: first difference far beyond normal EMG
-    d = np.abs(np.diff(emg, axis=1, prepend=emg[:, :1]))
-    med = np.median(d, axis=1, keepdims=True)
-    mad = np.median(np.abs(d - med), axis=1, keepdims=True)
-    jump = d > med + jump_mad * 1.4826 * mad
+    w = max(int(round(step_win_s * sfreq)), 2)
+    r = max(int(round(rms_win_s * sfreq)), 2)
 
-    # b) slow baseline swings (electrode motion): power well below the EMG band
-    lp = mne.filter.filter_data(emg, sfreq, l_freq=None, h_freq=swing_hfreq, verbose="error")
-    swing = np.abs(lp - np.median(lp, axis=1, keepdims=True))
-    swing_bad = swing > swing_ratio * np.median(swing, axis=1, keepdims=True)
+    # local EMG level: RMS of the in-band signal (cheap IIR, zero-phase)
+    sos = butter(4, [20, min(450, 0.95 * sfreq / 2)], btype="bandpass", fs=sfreq, output="sos")
+    hp = sosfiltfilt(sos, emg, axis=1)
+    local_rms = np.sqrt(uniform_filter1d(hp ** 2, size=r, axis=1, mode="nearest"))
+    floor = np.median(local_rms, axis=1, keepdims=True)
 
-    mask = jump | swing_bad
+    # two-sided step: mean of the next w samples minus mean of the previous w samples
+    m = uniform_filter1d(emg, size=w, axis=1, mode="nearest")      # centred mean, width w
+    half = w // 2
+    right = np.roll(m, -half, axis=1)       # mean of [t, t+w)
+    left = np.roll(m, half, axis=1)         # mean of [t-w, t)
+    step = np.abs(right - left)
+    step[:, :w] = 0
+    step[:, -w:] = 0
+    step_bad = step > step_ratio * (local_rms + floor)
+
+    # ADC rails / saturation: a real clip sits at the rail for a RUN of samples, so only
+    # count channels where at least `rail_min_samples` land there (a lone noise peak is not a clip)
+    rail_min_samples = 5
+    amax = np.max(np.abs(emg), axis=1, keepdims=True)
+    rail = np.abs(emg) >= rail_frac * amax
+    rail &= rail.sum(axis=1, keepdims=True) >= rail_min_samples
+
+    mask = step_bad | rail
     k = int(round(pad_s * sfreq))
     if k > 0:
         mask = binary_dilation(mask, structure=np.ones((1, 2 * k + 1), dtype=bool))
@@ -60,6 +88,50 @@ def blank_transients(emg: np.ndarray, mask: np.ndarray) -> np.ndarray:
     return x
 
 
+def filter_emg(emg: np.ndarray,
+               sfreq: float,
+               l_freq: float = 20.0,
+               h_freq: float = 450.0,
+               bp_order: int = 4,
+               notch_freqs=(60, 120, 180),
+               notch_q: float = 30.0) -> np.ndarray:
+    """
+    Zero-phase band-pass + mains notches with scipy, on a (n_channels, n_samples) array.
+    A 4th-order Butterworth (8th effective after filtfilt) rings for ~50 ms; an iirnotch with
+    Q=30 (2 Hz wide at 60 Hz) for tens of ms. The v1 MNE FIR filters had kernels of 0.66 s
+    (band-pass) and 3.3 s (notch), which is why any residual transient smeared into a long
+    narrow-band burst.
+    Args:
+        emg: (n_channels, n_samples) array, any unit.
+        sfreq: Sampling frequency in Hz.
+        l_freq, h_freq: Band-pass edges in Hz (h_freq is clipped below Nyquist).
+        bp_order: Butterworth order (per pass).
+        notch_freqs: Mains fundamental and harmonics to notch; those above Nyquist are skipped.
+        notch_q: Quality factor of each notch (bandwidth = f0 / Q).
+    Returns:
+        Filtered array, same shape as the input.
+    """
+    nyq = sfreq / 2
+    h_freq = min(h_freq, 0.95 * nyq)
+    sos = butter(bp_order, [l_freq, h_freq], btype="bandpass", fs=sfreq, output="sos")
+    x = sosfiltfilt(sos, emg, axis=1)
+    for f0 in notch_freqs:
+        if f0 >= nyq:
+            continue
+        b, a = iirnotch(f0, notch_q, fs=sfreq)
+        x = filtfilt(b, a, x, axis=1)
+    return x
+
+
+def minmax_normalise(x: np.ndarray) -> np.ndarray:
+    """Min-max over all channels jointly (same as the v1 channel_wise=False behaviour)."""
+    return (x - x.min()) / (x.max() - x.min() + 1e-12)
+
+
+# ----------------------------------------------------------------------------
+# plotting
+# ----------------------------------------------------------------------------
+
 def plot_windowed_data(data_folder: pathlib.Path,
                        save_folder: pathlib.Path,
                        fname_stem: str,
@@ -67,7 +139,7 @@ def plot_windowed_data(data_folder: pathlib.Path,
                        step_size: int,
                        signal_type: str,
                        sfreq: float = 2000,
-                       raw_data: bool = True,
+                       raw_data: bool = False,
                        channel_id: int = None,
                        max_windows: int = None,
                        reject_bad_channels: bool = False,
@@ -83,7 +155,7 @@ def plot_windowed_data(data_folder: pathlib.Path,
         window_size: The size of the window in samples.
         step_size: The step size in samples.
         signal_type: The type of signal to plot, either "EMG" or "Joint Angle".
-        sfreq: The sampling frequency of the data.
+        sfreq: The sampling frequency of the data (overridden by the value in the BDF header).
         raw_data: Whether to plot the raw data, if True, plot the raw data, if False, then bandpass filter the data and plot the filtered data.
         channel_id: The ID of the channel to plot, if None, plot all channels on the same plot
         max_windows: Stop after this many windows (None = all). Useful for a quick look.
@@ -108,6 +180,7 @@ def plot_windowed_data(data_folder: pathlib.Path,
         segmented_data = np.array([data[:, start:start + window_size] for start in start_indices])
         return segmented_data, start_indices
 
+    # ---- 1. read the BDF with MNE, then leave MNE behind --------------------
     data_fname = f"{fname_stem}_emg.bdf"
     event_fname = f"{fname_stem}_events.tsv"
     channel_fname = f"{fname_stem}_channels.tsv"
@@ -118,74 +191,60 @@ def plot_windowed_data(data_folder: pathlib.Path,
     emg_names = chans.loc[chans['type'] == 'EMG', 'name'].tolist()
     # joint angle is categorized as "MISC" in the channel file
     joint_names = chans.loc[chans['type'] == 'MISC', 'name'].tolist()
-    # tell MNE the real channel types EMG and Joint Angle (it guessed "eeg" for all).
-    data.set_channel_types({**{n: "emg" for n in emg_names},
-                            **{n: "misc" for n in joint_names}}, verbose="error")
-    print(data.info)
 
+    emg_raw = data.get_data(picks=emg_names)          # (16, n) volts
+    joints_raw = data.get_data(picks=joint_names)     # (20, n) rad
+    n_times = emg_raw.shape[1]
+    del data
+
+    # ---- 2. BAD_IK events -> boolean keep mask on the continuous time base ---
     events = pd.read_csv(data_folder / event_fname, sep="\t")
     bad = events[events["trial_type"] == "BAD_IK"]
     print(bad[["onset", "duration"]])
-    data.set_annotations(mne.Annotations(onset=bad["onset"].to_numpy(),
-                                         duration=bad["duration"].to_numpy(),
-                                         description=["BAD_IK"] * len(bad)))
+    keep = np.ones(n_times, dtype=bool)
+    for onset, dur in zip(bad["onset"].to_numpy(), bad["duration"].to_numpy()):
+        a = int(round(onset * sfreq))
+        b = int(round((onset + dur) * sfreq))
+        keep[max(a, 0):min(b, n_times)] = False
 
-    # transient mask on the continuous (pre-omit) time base; None when not computed
-    transient_mask = None
-
+    # ---- 3. processing (all numpy / scipy) ----------------------------------
+    transient_mask = None       # on the continuous (pre-omit) time base
     if raw_data:
         emg_unit = "µV"
-        emg_scale = 1e6          # MNE returns volts
+        emg_proc = emg_raw * 1e6
     else:
-        emg_picks = mne.pick_types(data.info, emg=True)
+        emg_proc = emg_raw.copy()
 
-        # ---- 1. find & blank broadband transients on the RAW data ----------
+        # 3a. find & blank broadband transients on the RAW data.
         # A band-pass cannot remove a pop / contact-loss step: the step has energy at
         # every frequency, and what survives 20-450 Hz looks like a ~20 Hz spindle;
         # what survives a narrow notch looks like a 60 Hz tail. So the step has to be
         # removed while it is still a step, i.e. before any filtering.
         if remove_transients:
-            raw_emg = data.get_data(picks=emg_picks)
-            transient_mask = detect_transients(raw_emg, sfreq)
+            transient_mask = detect_transients(emg_proc, sfreq)
             frac = transient_mask.mean(axis=1) * 100
             print("Transient samples flagged per channel (%): "
                   + ", ".join(f"{n}:{p:.2f}" for n, p in zip(emg_names, frac)))
-            data._data[emg_picks] = blank_transients(raw_emg, transient_mask)
+            if (frac > 5).any():
+                print("WARNING: >5% flagged on some channels; raise step_ratio or inspect the "
+                      "shaded regions before trusting the interpolation.")
+            emg_proc = blank_transients(emg_proc, transient_mask)
 
-        # ---- 2. short-impulse-response filters (IIR Butterworth, zero-phase) ---
-        # The v1 FIR band-pass (5 Hz transition at 20 Hz) had a ~0.66 s kernel and the
-        # v1 FIR notch (notch_widths=6, trans_bandwidth=2) a ~3.3 s kernel, so any
-        # residual transient rang for a long time. A 4th-order Butterworth rings for
-        # ~50 ms; a 2nd-order IIR notch (width 2 Hz, Q~30) for tens of ms.
-        data = data.filter(l_freq=20, h_freq=450, picks="emg", method="iir",
-                           iir_params=dict(order=4, ftype="butter"),
-                           phase="zero", verbose="error")
-        data = data.notch_filter(freqs=[60, 120, 180], picks="emg", method="iir",
-                                 iir_params=dict(order=2, ftype="butter"),
-                                 notch_widths=2, verbose="error")
+        # 3b. zero-phase band-pass + mains notches (short impulse responses)
+        emg_proc = filter_emg(emg_proc, sfreq,
+                              l_freq=20, h_freq=450, bp_order=4,
+                              notch_freqs=(60, 120, 180), notch_q=30)
 
-        # ---- 3. normalise ----------------------------------------------------
-        data = data.apply_function(lambda x: (x - x.min()) / (x.max() - x.min() + 1e-12),
-                                   picks="emg", verbose="error", channel_wise=False)
+        # 3c. min-max over all channels jointly
+        emg_proc = minmax_normalise(emg_proc)
         emg_unit = "a.u. (min-max)"
-        emg_scale = 1.0          # already dimensionless
 
-    # any description starting with "BAD" is honoured by reject_by_annotation.
-    # "omit" drops the BAD_IK samples, so the remaining signal is NOT continuous
-    # at the seams; fine for eyeballing, use "NaN" to keep the gaps visible.
-    # NOTE: filtering above runs on the continuous data, so the seams do not ring.
-    emg_clean = data.get_data(picks=emg_names, reject_by_annotation="omit") * emg_scale
-    joints_clean = data.get_data(picks=joint_names, reject_by_annotation="omit")
-
-    # carry the transient mask through the same BAD_IK omission so it lines up
-    mask_clean = None
-    if transient_mask is not None:
-        keep = np.ones(data.n_times, dtype=bool)
-        for onset, dur in zip(bad["onset"].to_numpy(), bad["duration"].to_numpy()):
-            a = int(round(onset * sfreq))
-            b = int(round((onset + dur) * sfreq))
-            keep[max(a, 0):min(b, data.n_times)] = False
-        mask_clean = transient_mask[:, keep]
+    # ---- 4. drop BAD_IK samples AFTER filtering ------------------------------
+    # The filters ran on the continuous data, so the seams do not ring. The
+    # remaining signal is NOT continuous at the seams; fine for eyeballing.
+    emg_clean = emg_proc[:, keep]
+    joints_clean = joints_raw[:, keep]
+    mask_clean = transient_mask[:, keep] if transient_mask is not None else None
 
     emg_segments, starts = sliding_window(emg_clean, window_size, step_size)  # (N, 16, W)
     joints_segments, _ = sliding_window(joints_clean, window_size, step_size)  # (N, 20, W)
@@ -242,7 +301,7 @@ def plot_windowed_data(data_folder: pathlib.Path,
     show_mask = (shade_transients and signal_type == "EMG" and mask_segments is not None)
 
     def shade(ax, t, m, y0, y1):
-        """Shade contiguous True runs of mask m (1-D) between y0 and y1."""
+        """Shade contiguous True runs of mask m (1-D) between y0 and y1 (axes fractions)."""
         if not m.any():
             return
         edges = np.diff(np.concatenate(([0], m.astype(int), [0])))
@@ -312,7 +371,7 @@ if __name__ == "__main__":
     # BIDS root is the dataset folder (nm000281), not the download parent.
     # Use raw strings so Windows backslashes are not treated as escape sequences.
     data_root = pathlib.Path(r'F:\EEG_Challenge\Dataset\Salter2024Emg2pose\download\nm000281')
-    save_root = pathlib.Path(r'F:\EEG_Challenge\Inspection_NoFilter')
+    save_root = pathlib.Path(r'F:\EEG_Challenge\Inspection_FilterV2')
 
     for s in subject_str:
         for sess in sessions:
