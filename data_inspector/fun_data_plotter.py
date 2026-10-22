@@ -5,6 +5,7 @@ import numpy as np
 import mne
 import pandas as pd
 import pathlib
+from channel_rejection import detect_high_rms_channels, detect_powerline_channels, arm_band_interpolate_channels
 
 
 def plot_windowed_data(data_folder: pathlib.Path,
@@ -14,9 +15,10 @@ def plot_windowed_data(data_folder: pathlib.Path,
                        step_size: int,
                        signal_type: str,
                        sfreq: float = 2000,
-                       raw_data: bool = False,
+                       raw_data: bool = True,
                        channel_id: int = None,
                        max_windows: int = None,
+                       reject_bad_channels: bool = False,
                        dpi: int = 120):
     """
     Plot the windowed data of either the EMG or the Joint Angle Calculated by Inverse Kinematics.
@@ -31,6 +33,7 @@ def plot_windowed_data(data_folder: pathlib.Path,
         raw_data: Whether to plot the raw data, if True, plot the raw data, if False, then bandpass filter the data and plot the filtered data.
         channel_id: The ID of the channel to plot, if None, plot all channels on the same plot
         max_windows: Stop after this many windows (None = all). Useful for a quick look.
+        reject_bad_channels: Whether to reject the bad channels, if True, then reject the bad channels and interpolate the bad channels.
         dpi: Resolution of the saved PNG files.
     Returns:
         List of the saved figure paths.
@@ -119,13 +122,29 @@ def plot_windowed_data(data_folder: pathlib.Path,
     tag = "raw" if raw_data else "filtered"
     sig_tag = signal_type.replace(" ", "")
     saved = []
+    bad_channel_log = {}
+
+    if reject_bad_channels:
+        for n in range(n_windows):
+            rms_channels = detect_high_rms_channels(segments[n, :, :], 3)
+            powerline_channels = detect_powerline_channels(segments[n, :, :], 200, sfreq)
+            # combine the bad channels
+            bad_channels = np.concatenate((rms_channels, powerline_channels))
+            bad_channels = np.unique(bad_channels)
+            print(f"The {n}th window has {len(bad_channels)} bad channels.")
+            bad_channel_log[f"win{n}"] = bad_channels
+            segments[n, :, :] = arm_band_interpolate_channels(segments[n, :, :], bad_channels, n_channels)
+    else:
+        for n in range(n_windows):
+            bad_channel_log[f"win{n}"] = "N/A"
+
 
     for i in range(n_windows):
         # continuous time axis: window i spans [starts[i], starts[i] + window_size) samples
         t = (starts[i] + np.arange(window_size)) / sfreq
         t0, t1 = t[0], t[-1] + 1 / sfreq
         title = (f"Window {i} ({t0:.2f}-{t1:.2f} s) of the {signal_type} data ({tag}) "
-                 f"for data file\n{data_fname}")
+                 f"for data file\n{data_fname}\n{bad_channel_log[f'win{i}']}")
         fig, ax = plt.subplots(1, 1, figsize=(12, 10 if channel_id is None else 4))
 
         if channel_id is not None:
@@ -174,7 +193,7 @@ if __name__ == "__main__":
     # BIDS root is the dataset folder (nm000281), not the download parent.
     # Use raw strings so Windows backslashes are not treated as escape sequences.
     data_root = pathlib.Path(r'F:\EEG_Challenge\Dataset\Salter2024Emg2pose\download\nm000281')
-    save_root = pathlib.Path(r'F:\EEG_Challenge\Inspection')
+    save_root = pathlib.Path(r'F:\EEG_Challenge\Inspection_NoFilter')
 
     for s in subject_str:
         for sess in sessions:
