@@ -17,10 +17,10 @@ from pathlib import Path
 
 import torch
 
-CKPT_PATH = Path("/home/jerry/Challenge_2026/result/neuralbench.main.Experiment.run,1/seed=33,task_name=pose,loss.name=L1Loss,brain_model_output_size=20,delete_checkpoints_on_exit=False,augmentation={num_bands=1,pr...586-aae5ce7c/best.ckpt").expanduser()
-OUT_PATH = Path("/home/jerry/Challenge_2026/submission/tcn_r3/weights.pt").expanduser()
+CKPT_PATH = Path('/home/jerry/Challenge_2026/result/neuralbench.main.Experiment.run,1/seed=33,task_name=pose,loss.name=L1Loss,brain_model_output_size=20,delete_checkpoints_on_exit=False,augmentation={num_bands=1,pr...584-e2d7cf64/best.ckpt').expanduser()
+OUT_PATH = Path("/home/jerry/Challenge_2026/submission/ts_lstm_r0/weights.pt").expanduser()
 # Training YAML whose ``brain_model_config`` describes these weights; None to skip.
-CONFIG_YAML = Path("/home/jerry/Challenge_2026/neuroai_jf/neuralbench-repo/neuralbench/models/st_tcn_pose.yaml").expanduser()
+CONFIG_YAML = Path("/home/jerry/Challenge_2026/neuroai_jf/neuralbench-repo/neuralbench/models/st_lstm_pose.yaml").expanduser()
 
 # Prefix under which the brain model lives in the Lightning state_dict;
 # None = auto-detect ("model." for neuraltrain's BrainModule).
