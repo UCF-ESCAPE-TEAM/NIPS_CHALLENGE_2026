@@ -14,12 +14,20 @@ submission/<model>/weights.pt      # NOT committed: extract from the run's best.
 | `st_tcn_pose_cmixup` | `StTcnPoseCMixup` | `neuralbench/models/st_tcn_pose_cmixup.yaml` (C-Mixup training) | same | pending |
 | `st_tcn_pose_ohem` | `StTcnPoseOhem` | `neuralbench/models/st_tcn_pose_ohem.yaml` (OHEM loss) | same | pending |
 | `st_lstm_pose`    | `StLstmPose`     | `neuralbench/models/st_lstm_pose.yaml`    | same | 17.06 deg |
+| `st_pose_transformer` | `StPoseTransformer` | `neuralbench/models/st_pose_transformer.yaml` (Conformer encoder, position head, OHEM) | same | pending |
+| `st_pose_transformer_ghm` | `StPoseTransformerGhm` | `neuralbench/models/st_pose_transformer_ghm.yaml` (same model, GHM-R loss) | same | pending |
+| `st_pose_transformer_l1` | `StPoseTransformerL1` | `neuralbench/models/st_pose_transformer_l1.yaml` (same model, plain L1) | same | pending |
+| `st_vel_transformer` | `StVelTransformer` | `neuralbench/models/st_vel_transformer.yaml` (Conformer encoder, velocity decoder, OHEM) | same | pending |
+| `st_vel_transformer_ghm` | `StVelTransformerGhm` | `neuralbench/models/st_vel_transformer_ghm.yaml` (same model, GHM-R loss) | same | pending |
+| `st_vel_transformer_l1` | `StVelTransformerL1` | `neuralbench/models/st_vel_transformer_l1.yaml` (same model, plain L1) | same | pending |
 | `neuraldrive_pose`| `NeuralDrivePose`| `neuralbench/models/neuraldrive_pose.yaml`| same | -- |
 | `ulhm_pose`       | `ULHM-Pose`      | `ULHM/ulhm_pose.yaml`                     | `prepare_submission/ulhm_submission/export_ulhm_submission.py` | -- |
 
 The model and front-end classes in the six neuraltrain-based scripts are
 verbatim copies from the fork (checked against commit `8248dc7`); regenerate them if the
 model files change, otherwise `load_state_dict(strict=True)` fails.
+The six `st_{pose,vel}_transformer*` scripts were generated from the fork at commit `77a9e18` (front end from the `st_tcn_pose_ohem` script, model classes from `st_pose_transformer.py` / `st_vel_transformer.py`) and verified to load the fork models with `strict=True` and reproduce their outputs; the `_ghm` / `_l1` folders are architecturally identical to their base folder and differ only in `Solver.name`. On Newton the weights come from the `*_newton.yaml` runs, which share the `brain_model_config`; point `extract_weights_rev1.py` at whichever YAML was trained.
+
 `st_tcn_pose_ghm`, `st_tcn_pose_ohem` and `st_tcn_pose_cmixup` are architecturally
 identical to `st_tcn_pose` (the GHM-R / OHEM losses and C-Mixup change training only; the cmixup
 checkpoint's `mix_*` config keys are dropped at load) and differ only in
