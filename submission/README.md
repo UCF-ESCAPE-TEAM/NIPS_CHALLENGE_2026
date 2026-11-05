@@ -33,6 +33,8 @@ identical to `st_tcn_pose` (the GHM-R / OHEM losses and C-Mixup change training 
 checkpoint's `mix_*` config keys are dropped at load) and differ only in
 `Solver.name`.
 
+Step-by-step walkthrough (find `best.ckpt` → `extract_weights_rev1.py` → `run_submissions.sh` → upload), with the transformer folders as the example: `submission/TRANSFORMER_SUBMISSION_TUTORIAL.md`.
+
 Test and zip everything:
 
 ```bash
