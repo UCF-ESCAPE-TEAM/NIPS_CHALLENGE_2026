@@ -1,3 +1,4 @@
 submission/*/weights.pt
 submission/logs/
 submission/zips/
+__pycache__/
