@@ -28,23 +28,29 @@ HEAD_DOC = {
     "vel": "VelocityHead (position + velocity readouts per frame, integrated with complementary fusion, fuse_gain 0.1)",
 }
 
-for head in ("pose", "vel"):
-    yml = yaml.safe_load((FORK / f"neuralbench-repo/neuralbench/models/ca_emgmamba_{head}.yaml").read_text())
-    cfg = {k: v for k, v in yml["brain_model_config"].items() if k not in ("name", "=replace=")}
-    assert cfg["head"] == head
-    cfg_lines = "\n".join(f"    {k}={tuple(v) if isinstance(v, list) else v!r}," for k, v in cfg.items())
-    solver = "CaEmgMambaPose" if head == "pose" else "CaEmgMambaVel"
+# (submission folder, training YAML stem in the fork, Solver.name)
+VARIANTS = [
+    ("ca_emgmamba_pose", "ca_emgmamba_pose", "CaEmgMambaPose"),
+    ("ca_emgmamba_vel", "ca_emgmamba_vel", "CaEmgMambaVel"),
+    ("ca_emgmamba_vel_R2a", "ca_emgmamba_vel_R2a", "CaEmgMambaVelR2a"),   # R0 with n_layers 2
+]
 
-    header = f'''"""Codabench submission -- CaEmgMamba, {head} head (Track 4, EMG-to-pose).
+for folder, stem, solver in VARIANTS:
+    yml = yaml.safe_load((FORK / f"neuralbench-repo/neuralbench/models/{stem}.yaml").read_text())
+    cfg = {k: v for k, v in yml["brain_model_config"].items() if k not in ("name", "=replace=")}
+    head = cfg["head"]
+    cfg_lines = "\n".join(f"    {k}={tuple(v) if isinstance(v, list) else v!r}," for k, v in cfg.items())
+
+    header = f'''"""Codabench submission -- CaEmgMamba, {head} head, config {stem} (Track 4, EMG-to-pose).
 
 Architecture (neuraltrain/models/ca_emgmamba.py in UCF-ESCAPE-TEAM/neuroai_jf,
 branch emg-pose-cnn, commit {COMMIT}; training config
-neuralbench/models/ca_emgmamba_{head}.yaml):
+neuralbench/models/{stem}.yaml):
 
     EMG (B, 16, T) --> WindowNorm (per-window per-electrode z-score, no
     parameters, no filters) --> ConvStem (3 strided Conv1d stages, 2 kHz -> 50 Hz,
-    SE channel attention after each stage) --> MambaEncoder (4 bidirectional
-    Mamba layers, d 192) --> {HEAD_DOC[head]}
+    SE channel attention after each stage) --> MambaEncoder ({cfg['n_layers']} {'bidirectional' if cfg['bidirectional'] else 'forward-only'}
+    Mamba layers, d {cfg['d_model']}) --> {HEAD_DOC[head]}
     --> x40 linear upsample --> (B, T, 20) radians, transposed to (B, 20, T) by
     the wrapper.
 
@@ -63,7 +69,7 @@ EMG and returns ``(B, n_joints, T)`` joint angles in radians; windows are
 independent. Bidirectional processing inside a window is allowed.
 
 Local test, from the 2026-competition repo:
-    COMPET_SUBMISSION_DIR=/path/to/ca_emgmamba_{head} \\\\
+    COMPET_SUBMISSION_DIR=/path/to/{folder} \\\\
         benchopt run tracks/emg_pose -d Simulated -s {solver} --no-cache
 or through shell/run_submissions.sh.
 """
@@ -80,7 +86,7 @@ from benchmark_utils.base_solver import CompetSolver
 
 _fast_scan = None   # never use the mamba_ssm kernel in the submission
 
-# Mirror of ca_emgmamba_{head}.yaml's brain_model_config (minus ``name``). Must match
+# Mirror of {stem}.yaml's brain_model_config (minus ``name``). Must match
 # the weights; the embedded checkpoint config wins where the two differ.
 CONFIG = dict(
 {cfg_lines}
@@ -106,7 +112,9 @@ def build_model(n_chans, n_joints, config):
         if cfg.get(k) is not None:
             cfg[k] = tuple(cfg[k])
     cfg["scan_impl"] = "torch"           # belt and braces: _fast_scan is None anyway
-    model_kwargs = {{k: cfg[k] for k in CaEmgMambaModel.MODEL_FIELDS}}
+    cfg["time_stretch_prob"] = 0.0       # training-only augmentation; inert at inference anyway
+    # keys the YAML left at their defaults are taken from the class defaults
+    model_kwargs = {{k: cfg[k] for k in CaEmgMambaModel.MODEL_FIELDS if k in cfg}}
     return CaEmgMambaModel(n_in_channels=n_chans, n_outputs=n_joints,
                            sfreq=cfg["sfreq"], **model_kwargs)
 
@@ -214,7 +222,7 @@ class Solver(CompetSolver):
         torch.save({{"state_dict": model.net.state_dict(), "config": model.config}},
                    path / "weights.pt")
 '''
-    out = OUT / f"ca_emgmamba_{head}" / "submission.py"
+    out = OUT / folder / "submission.py"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(header + classes.rstrip() + "\n" + wrapper)
     print(out, len((header + classes + wrapper).splitlines()), "lines")

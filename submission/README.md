@@ -22,6 +22,7 @@ submission/<model>/weights.pt      # NOT committed: extract from the run's best.
 | `st_vel_transformer_l1` | `StVelTransformerL1` | `neuralbench/models/st_vel_transformer_l1.yaml` (same model, plain L1) | same | pending |
 | `ca_emgmamba_pose` | `CaEmgMambaPose` | `neuralbench/models/ca_emgmamba_pose.yaml` (WindowNorm, CNN stem + SE, bidirectional Mamba, position head, OHEM) | same | pending |
 | `ca_emgmamba_vel` | `CaEmgMambaVel` | `neuralbench/models/ca_emgmamba_vel.yaml` (same trunk, velocity head) | same | pending |
+| `ca_emgmamba_vel_R2a` | `CaEmgMambaVelR2a` | `neuralbench/models/ca_emgmamba_vel_R2a.yaml` (R0 trunk with `n_layers 2`) | same | pending |
 | `neuraldrive_pose`| `NeuralDrivePose`| `neuralbench/models/neuraldrive_pose.yaml`| same | -- |
 | `ulhm_pose`       | `ULHM-Pose`      | `ULHM/ulhm_pose.yaml`                     | `prepare_submission/ulhm_submission/export_ulhm_submission.py` | -- |
 
@@ -30,7 +31,7 @@ verbatim copies from the fork (checked against commit `8248dc7`); regenerate the
 model files change, otherwise `load_state_dict(strict=True)` fails.
 The six `st_{pose,vel}_transformer*` scripts were generated from the fork at commit `77a9e18` (front end from the `st_tcn_pose_ohem` script, model classes from `st_pose_transformer.py` / `st_vel_transformer.py`) and verified to load the fork models with `strict=True` and reproduce their outputs; the `_ghm` / `_l1` folders are architecturally identical to their base folder and differ only in `Solver.name`. On Newton the weights come from the `*_newton.yaml` runs, which share the `brain_model_config`; point `extract_weights_rev1.py` at whichever YAML was trained.
 
-The two `ca_emgmamba_*` scripts were generated from the fork at commit `5593655` by
+The `ca_emgmamba_*` scripts were generated from the fork at commit `b17f885` (adds `TimeStretch`; the R4 run uses the plain `ca_emgmamba_vel` script, the augmentation ships no weights) by
 `prepare_submission/ca_emgmamba/make_submissions.py <fork_root> submission <commit>` (model classes
 verbatim, no `mamba_ssm` import: the pure-PyTorch scan is forced) and verified with
 `prepare_submission/ca_emgmamba/check_submissions.py` (strict load from `best.ckpt` and `weights.pt`,

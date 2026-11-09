@@ -1,7 +1,7 @@
-"""Codabench submission -- CaEmgMamba, vel head (Track 4, EMG-to-pose).
+"""Codabench submission -- CaEmgMamba, vel head, config ca_emgmamba_vel (Track 4, EMG-to-pose).
 
 Architecture (neuraltrain/models/ca_emgmamba.py in UCF-ESCAPE-TEAM/neuroai_jf,
-branch emg-pose-cnn, commit 5593655; training config
+branch emg-pose-cnn, commit b17f885; training config
 neuralbench/models/ca_emgmamba_vel.yaml):
 
     EMG (B, 16, T) --> WindowNorm (per-window per-electrode z-score, no
@@ -314,6 +314,62 @@ class MambaEncoder(nn.Module):
 
 
 # =============================================================================
+# Time-stretch augmentation (training only; applied to EMG AND targets)
+# =============================================================================
+class TimeStretch(nn.Module):
+    """Resample a window in time about its centre by a per-window factor ``f``.
+
+    ``out[t] = in[c + (t - c) * f]`` for EMG and targets alike (linear
+    interpolation), so the same movement is seen faster (``f > 1``) or slower
+    (``f < 1``) while the window keeps its length. Source indices outside the
+    window are clamped for the EMG (edge hold) and the target frames there are
+    set to NaN, which the training step already masks out of the loss and the
+    metrics. Purpose: break the fixed tempo of each stage so the model cannot
+    recall a stage's trajectory from timing alone (R0 failed on unseen stages).
+
+    Hooked into training through ``CaEmgMambaModel.train_batch_transform``,
+    the same hook C-Mixup uses, so no change to the Lightning module is needed.
+    Band rotation (the task's augmentation) is applied afterwards as usual.
+    """
+
+    def __init__(self, prob: float = 1.0, lo: float = 0.8, hi: float = 1.2):
+        super().__init__()
+        if not 0.0 <= prob <= 1.0:
+            raise ValueError(f"time_stretch_prob must be in [0, 1], got {prob}")
+        if not 0.0 < lo <= hi:
+            raise ValueError(f"time_stretch_range must satisfy 0 < lo <= hi, got {(lo, hi)}")
+        self.prob, self.lo, self.hi = prob, lo, hi
+        self.last_stats: dict[str, float] = {}
+
+    @staticmethod
+    def _resample(x: torch.Tensor, gx: torch.Tensor) -> torch.Tensor:  # (B, C, T), (B, T) in [-1, 1]
+        grid = torch.stack([gx, torch.zeros_like(gx)], dim=-1).unsqueeze(1)   # (B, 1, T, 2)
+        y = F.grid_sample(x.unsqueeze(2).float(), grid, mode="bilinear",
+                          padding_mode="border", align_corners=True)
+        return y.squeeze(2).to(x.dtype)
+
+    def forward(self, x: torch.Tensor, y: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """``x`` EMG (B, C, T), ``y`` targets (B, J, T) with NaN for unlabelled frames."""
+        B, _, T = x.shape
+        if y.shape[-1] != T:
+            raise ValueError(f"EMG and target must share the time axis, got {T} vs {y.shape[-1]}")
+        dev = x.device
+        f = torch.empty(B, device=dev).uniform_(self.lo, self.hi)
+        f = torch.where(torch.rand(B, device=dev) < self.prob, f, torch.ones_like(f))
+        c = (T - 1) / 2.0
+        t = torch.arange(T, device=dev, dtype=torch.float32)
+        src = c + (t[None, :] - c) * f[:, None]                                # (B, T)
+        inside = (src >= 0) & (src <= T - 1)
+        gx = src / (T - 1) * 2.0 - 1.0
+        keep = (f == 1.0)[:, None, None]          # untouched windows: exact pass-through, no interpolation
+        xs = torch.where(keep, x, self._resample(x, gx))
+        ys = torch.where(keep, y, self._resample(y, gx).masked_fill(~inside.unsqueeze(1), torch.nan))
+        self.last_stats = {"ts_factor_mean": float(f.mean()),
+                           "ts_frac_masked": float((~inside).float().mean())}
+        return xs, ys
+
+
+# =============================================================================
 # Heads
 # =============================================================================
 class PoseHead(nn.Module):
@@ -379,6 +435,7 @@ class CaEmgMambaModel(nn.Module):
         "d_model", "n_layers", "d_state", "expand", "d_conv", "dt_rank",
         "bidirectional", "enc_dropout", "scan_impl", "scan_checkpoint",
         "head", "position_steps", "vel_scale", "fuse_gain",
+        "time_stretch_prob", "time_stretch_range",
     )
 
     def __init__(
@@ -395,6 +452,7 @@ class CaEmgMambaModel(nn.Module):
         enc_dropout: float = 0.1, scan_impl: str = "auto", scan_checkpoint: bool = True,
         head: str = "pose", position_steps: int = 12, vel_scale: float = 0.02,
         fuse_gain: float = 0.1,
+        time_stretch_prob: float = 0.0, time_stretch_range=(0.8, 1.2),
     ):
         super().__init__()
         if head not in ("pose", "vel"):
@@ -409,6 +467,21 @@ class CaEmgMambaModel(nn.Module):
         self.head = (PoseHead(d_model, n_outputs) if head == "pose"
                      else VelocityHead(d_model, n_outputs, position_steps, vel_scale, fuse_gain))
         self.feature_rate = sfreq / self.stem.downsample
+        # training-only joint augmentation; the Lightning module calls
+        # ``train_batch_transform`` when the attribute exists (see pl_module._run_step)
+        self.time_stretch = (TimeStretch(time_stretch_prob, *time_stretch_range)
+                             if time_stretch_prob > 0 else None)
+        self.last_mix_stats: dict[str, float] = {}
+        if self.time_stretch is not None:
+            self.train_batch_transform = self._time_stretch_batch
+
+    def _time_stretch_batch(self, neuro, target, subject_ids=None):
+        """Hook for pl_module: stretch EMG and targets together (training only)."""
+        if not self.training:
+            return neuro, target
+        neuro, target = self.time_stretch(neuro, target)
+        self.last_mix_stats = self.time_stretch.last_stats
+        return neuro, target
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """EMG ``(B, C, T)`` -> joint angles ``(B, T, n_outputs)``."""
@@ -432,7 +505,9 @@ def build_model(n_chans, n_joints, config):
         if cfg.get(k) is not None:
             cfg[k] = tuple(cfg[k])
     cfg["scan_impl"] = "torch"           # belt and braces: _fast_scan is None anyway
-    model_kwargs = {k: cfg[k] for k in CaEmgMambaModel.MODEL_FIELDS}
+    cfg["time_stretch_prob"] = 0.0       # training-only augmentation; inert at inference anyway
+    # keys the YAML left at their defaults are taken from the class defaults
+    model_kwargs = {k: cfg[k] for k in CaEmgMambaModel.MODEL_FIELDS if k in cfg}
     return CaEmgMambaModel(n_in_channels=n_chans, n_outputs=n_joints,
                            sfreq=cfg["sfreq"], **model_kwargs)
 
