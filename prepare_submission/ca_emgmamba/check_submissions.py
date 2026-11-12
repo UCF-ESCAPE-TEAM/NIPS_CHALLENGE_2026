@@ -29,19 +29,23 @@ bs.CompetSolver = CompetSolver; bu.base_solver = bs
 sys.modules["benchmark_utils"], sys.modules["benchmark_utils.base_solver"] = bu, bs
 
 from neuraltrain.models.ca_emgmamba import CaEmgMamba  # noqa: E402
+from neuraltrain.models.ca_emgmamba_cmixup import CaEmgMambaCMixup  # noqa: E402
+CONFIG_CLASSES = {"CaEmgMamba": CaEmgMamba, "CaEmgMambaCMixup": CaEmgMambaCMixup}
 
 torch.manual_seed(0)
 X = torch.randn(8, 16, 10000) * 100
 ok = True
 VARIANTS = [("ca_emgmamba_pose", "ca_emgmamba_pose", "CaEmgMambaPose"),
             ("ca_emgmamba_vel", "ca_emgmamba_vel", "CaEmgMambaVel"),
-            ("ca_emgmamba_vel_R2a", "ca_emgmamba_vel_R2a", "CaEmgMambaVelR2a")]
+            ("ca_emgmamba_vel_R2a", "ca_emgmamba_vel_R2a", "CaEmgMambaVelR2a"),
+            ("ca_emgmamba_vel_R4", "ca_emgmamba_vel_R4", "CaEmgMambaVelR4"),
+            ("ca_emgmamba_vel_R5", "ca_emgmamba_vel_newton_R5", "CaEmgMambaVelR5")]
 for folder, stem, solver in VARIANTS:
     head = folder
     yml = yaml.safe_load((FORK / f"neuralbench-repo/neuralbench/models/{stem}.yaml").read_text())
     cfg = {k: v for k, v in yml["brain_model_config"].items() if k not in ("name", "=replace=")}
     torch.manual_seed(1)
-    ref = CaEmgMamba(**cfg).build(16, 20).eval()
+    ref = CONFIG_CLASSES[yml["brain_model_config"]["name"]](**cfg).build(16, 20).eval()
     for p in ref.parameters():                       # non-trivial weights (gates not identity)
         torch.nn.init.normal_(p, std=0.05)
     with torch.no_grad():

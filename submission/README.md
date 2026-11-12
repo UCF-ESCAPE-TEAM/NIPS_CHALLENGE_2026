@@ -23,6 +23,8 @@ submission/<model>/weights.pt      # NOT committed: extract from the run's best.
 | `ca_emgmamba_pose` | `CaEmgMambaPose` | `neuralbench/models/ca_emgmamba_pose.yaml` (WindowNorm, CNN stem + SE, bidirectional Mamba, position head, OHEM) | same | pending |
 | `ca_emgmamba_vel` | `CaEmgMambaVel` | `neuralbench/models/ca_emgmamba_vel.yaml` (same trunk, velocity head) | same | pending |
 | `ca_emgmamba_vel_R2a` | `CaEmgMambaVelR2a` | `neuralbench/models/ca_emgmamba_vel_R2a.yaml` (R0 trunk with `n_layers 2`) | same | pending |
+| `ca_emgmamba_vel_R4` | `CaEmgMambaVelR4` | `neuralbench/models/ca_emgmamba_vel_R4.yaml` (R0 + time-stretch augmentation; training-only, same weights layout) | same | pending |
+| `ca_emgmamba_vel_R5` | `CaEmgMambaVelR5` | `neuralbench/models/ca_emgmamba_vel_newton_R5.yaml` (R0 trained with C-Mixup, model name `CaEmgMambaCMixup`; same weights layout) | same | pending |
 | `neuraldrive_pose`| `NeuralDrivePose`| `neuralbench/models/neuraldrive_pose.yaml`| same | -- |
 | `ulhm_pose`       | `ULHM-Pose`      | `ULHM/ulhm_pose.yaml`                     | `prepare_submission/ulhm_submission/export_ulhm_submission.py` | -- |
 

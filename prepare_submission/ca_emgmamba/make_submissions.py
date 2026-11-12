@@ -33,6 +33,8 @@ VARIANTS = [
     ("ca_emgmamba_pose", "ca_emgmamba_pose", "CaEmgMambaPose"),
     ("ca_emgmamba_vel", "ca_emgmamba_vel", "CaEmgMambaVel"),
     ("ca_emgmamba_vel_R2a", "ca_emgmamba_vel_R2a", "CaEmgMambaVelR2a"),   # R0 with n_layers 2
+    ("ca_emgmamba_vel_R4", "ca_emgmamba_vel_R4", "CaEmgMambaVelR4"),   # R0 + time-stretch (training only)
+    ("ca_emgmamba_vel_R5", "ca_emgmamba_vel_newton_R5", "CaEmgMambaVelR5"),   # R0 trained with C-Mixup (CaEmgMambaCMixup)
 ]
 
 for folder, stem, solver in VARIANTS:
@@ -88,6 +90,8 @@ _fast_scan = None   # never use the mamba_ssm kernel in the submission
 
 # Mirror of {stem}.yaml's brain_model_config (minus ``name``). Must match
 # the weights; the embedded checkpoint config wins where the two differ.
+# Training-only keys (time_stretch_*, mix_*) are carried for the audit trail and
+# ignored by build_model: they add no parameters and do nothing at inference.
 CONFIG = dict(
 {cfg_lines}
 )

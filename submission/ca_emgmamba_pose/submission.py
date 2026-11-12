@@ -1,7 +1,7 @@
 """Codabench submission -- CaEmgMamba, pose head, config ca_emgmamba_pose (Track 4, EMG-to-pose).
 
 Architecture (neuraltrain/models/ca_emgmamba.py in UCF-ESCAPE-TEAM/neuroai_jf,
-branch emg-pose-cnn, commit b17f885; training config
+branch emg-pose-cnn, commit b291150; training config
 neuralbench/models/ca_emgmamba_pose.yaml):
 
     EMG (B, 16, T) --> WindowNorm (per-window per-electrode z-score, no
@@ -45,6 +45,8 @@ _fast_scan = None   # never use the mamba_ssm kernel in the submission
 
 # Mirror of ca_emgmamba_pose.yaml's brain_model_config (minus ``name``). Must match
 # the weights; the embedded checkpoint config wins where the two differ.
+# Training-only keys (time_stretch_*, mix_*) are carried for the audit trail and
+# ignored by build_model: they add no parameters and do nothing at inference.
 CONFIG = dict(
     sfreq=2000.0,
     norm_eps=1e-12,
@@ -472,21 +474,30 @@ class CaEmgMambaModel(nn.Module):
         self.time_stretch = (TimeStretch(time_stretch_prob, *time_stretch_range)
                              if time_stretch_prob > 0 else None)
         self.last_mix_stats: dict[str, float] = {}
-        if self.time_stretch is not None:
-            self.train_batch_transform = self._time_stretch_batch
 
-    def _time_stretch_batch(self, neuro, target, subject_ids=None):
-        """Hook for pl_module: stretch EMG and targets together (training only)."""
-        if not self.training:
+    # ---- NeuralBench training hook ------------------------------------------------
+    def train_batch_transform(self, neuro, target, subject_ids=None):
+        """Called by ``pl_module._run_step`` in training with the batch's EMG
+        ``(B, C, T)``, targets ``(B, J, T)`` (NaN = unlabelled) and subject ids.
+        Applies the time-stretch when enabled; a no-op otherwise. Subclasses
+        (C-Mixup) extend it by calling ``super()`` first.
+        """
+        self.last_mix_stats = {}
+        if self.time_stretch is None or not self.training:
             return neuro, target
         neuro, target = self.time_stretch(neuro, target)
-        self.last_mix_stats = self.time_stretch.last_stats
+        self.last_mix_stats = dict(self.time_stretch.last_stats)
         return neuro, target
+
+    def _after_norm(self, x: torch.Tensor) -> torch.Tensor:
+        """Identity here; :class:`CaEmgMambaCMixupModel` mixes window pairs at this point."""
+        return x
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """EMG ``(B, C, T)`` -> joint angles ``(B, T, n_outputs)``."""
         n_samples = x.shape[-1]
-        z = self.stem(self.norm(x))        # (B, F, T')  features at ~50 Hz
+        x = self._after_norm(self.norm(x)) # (B, C, T)   z-scored per window (hook for C-Mixup)
+        z = self.stem(x)                   # (B, F, T')  features at ~50 Hz
         z = self.encoder(z)                # (B, d, T')  contextual features
         y = self.head(z)                   # (B, J, T')  one pose per frame
         y = F.interpolate(y, size=n_samples, mode="linear", align_corners=False)
